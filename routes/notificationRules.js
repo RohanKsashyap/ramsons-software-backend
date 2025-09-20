@@ -6,14 +6,15 @@ const {
   getNotificationRule,
   createNotificationRule,
   updateNotificationRule,
-  deleteNotificationRule
+  deleteNotificationRule,
+  checkDueDateNotifications,
+  testNotificationRule
 } = require('../controllers/notificationRules');
 
 // Input validation middleware
 const validateNotificationRuleInput = [
   check('name', 'Name is required').not().isEmpty(),
   check('triggerType', 'Trigger type is required').not().isEmpty(),
-  check('triggerThreshold', 'Trigger threshold is required').isNumeric(),
   (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -28,9 +29,15 @@ router.route('/')
   .get(getNotificationRules)
   .post(validateNotificationRuleInput, createNotificationRule);
 
+router.route('/check-due-dates')
+  .get(checkDueDateNotifications);
+
 router.route('/:id')
   .get(getNotificationRule)
   .put(updateNotificationRule)
   .delete(deleteNotificationRule);
+
+router.route('/:id/test')
+  .post(testNotificationRule);
 
 module.exports = router;

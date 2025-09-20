@@ -23,6 +23,17 @@ const TransactionSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
+  dueDate: {
+    type: Date,
+    // For invoice type transactions, due date will be required
+    validate: {
+      validator: function(v) {
+        // Only require due date for invoice type transactions
+        return this.type !== 'invoice' || v != null;
+      },
+      message: 'Due date is required for invoices'
+    }
+  },
   status: {
     type: String,
     required: [true, 'Please add a status'],

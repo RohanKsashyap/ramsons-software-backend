@@ -36,11 +36,15 @@ const NotificationRuleSchema = new mongoose.Schema({
   triggerType: {
     type: String,
     required: [true, 'Please add a trigger type'],
-    enum: ['invoice_created', 'payment_due', 'payment_overdue', 'payment_received']
+    enum: ['invoice_created', 'payment_due', 'payment_overdue', 'payment_received', 'due_date_reminder']
   },
   conditions: {
     type: Object,
-    default: {}
+    default: {},
+    daysBeforeDue: {
+      type: Number,
+      default: 1
+    }
   },
   active: {
     type: Boolean,
