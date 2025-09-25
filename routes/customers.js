@@ -6,7 +6,8 @@ const {
   getCustomer, 
   createCustomer, 
   updateCustomer, 
-  deleteCustomer 
+  deleteCustomer,
+  deleteMultipleCustomers
 } = require('../controllers/customers');
 
 // Input validation middleware
@@ -26,6 +27,10 @@ const validateCustomerInput = [
 router.route('/')
   .get(getCustomers)
   .post(validateCustomerInput, createCustomer);
+
+// Delete multiple customers
+router.route('/bulk')
+  .delete(deleteMultipleCustomers);
 
 router.route('/:id')
   .get(getCustomer)

@@ -34,6 +34,14 @@ exports.getDashboardStats = async (req, res) => {
       .limit(5)
       .populate('customerId', 'name');
     
+    // Get overdue count (invoices that are past due date and still pending)
+    const now = new Date();
+    const overdueCount = await Transaction.countDocuments({
+      type: 'invoice',
+      status: 'pending',
+      dueDate: { $lt: now }
+    });
+
     // Get customer distribution by balance range
     const customerDistribution = await Customer.aggregate([
       {
@@ -67,6 +75,7 @@ exports.getDashboardStats = async (req, res) => {
         totalTransactions,
         totalRevenue,
         totalOutstanding,
+        overdueCount,
         recentTransactions,
         customerDistribution: formattedDistribution
       }

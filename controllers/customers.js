@@ -106,3 +106,29 @@ exports.deleteCustomer = async (req, res, next) => {
     next(err);
   }
 };
+
+// @desc    Delete multiple customers
+// @route   DELETE /api/v1/customers/bulk
+// @access  Public
+exports.deleteMultipleCustomers = async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+    
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid customer IDs provided'
+      });
+    }
+
+    const result = await Customer.deleteMany({ _id: { $in: ids } });
+    
+    res.status(200).json({
+      success: true,
+      deletedCount: result.deletedCount,
+      message: `Successfully deleted ${result.deletedCount} customer(s)`
+    });
+  } catch (err) {
+    next(err);
+  }
+};

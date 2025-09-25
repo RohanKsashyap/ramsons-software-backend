@@ -7,7 +7,9 @@ const {
   createTransaction,
   updateTransaction,
   deleteTransaction,
-  getTransactionStats
+  deleteMultipleTransactions,
+  getTransactionStats,
+  getDueDateAlerts
 } = require('../controllers/transactions');
 
 // Input validation middleware
@@ -27,6 +29,11 @@ const validateTransactionInput = [
 
 // Transaction routes
 router.route('/stats').get(getTransactionStats);
+router.route('/due-date-alerts').get(getDueDateAlerts);
+
+// Delete multiple transactions
+router.route('/bulk')
+  .delete(deleteMultipleTransactions);
 
 router.route('/')
   .get(getTransactions)

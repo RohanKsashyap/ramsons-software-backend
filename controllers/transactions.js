@@ -291,3 +291,120 @@ exports.getTransactionStats = async (req, res, next) => {
     next(err);
   }
 };
+
+// @desc    Delete multiple transactions
+// @route   DELETE /api/v1/transactions/bulk
+// @access  Public
+exports.deleteMultipleTransactions = async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+    
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid transaction IDs provided'
+      });
+    }
+
+    // Get transactions to update customer balances
+    const transactions = await Transaction.find({ _id: { $in: ids } });
+    
+    // Update customer balances for completed transactions
+    for (const transaction of transactions) {
+      if (transaction.status === 'completed') {
+        const customer = await Customer.findById(transaction.customerId);
+        
+        if (customer) {
+          if (transaction.type === 'payment') {
+            customer.totalPaid -= transaction.amount;
+            customer.balance += transaction.amount;
+          } else if (transaction.type === 'invoice') {
+            customer.totalCredit -= transaction.amount;
+            customer.balance -= transaction.amount;
+          }
+          
+          await customer.save();
+        }
+      }
+    }
+
+    const result = await Transaction.deleteMany({ _id: { $in: ids } });
+    
+    res.status(200).json({
+      success: true,
+      deletedCount: result.deletedCount,
+      message: `Successfully deleted ${result.deletedCount} transaction(s)`
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @desc    Get due date alerts
+// @route   GET /api/v1/transactions/due-date-alerts
+// @access  Public
+exports.getDueDateAlerts = async (req, res, next) => {
+  try {
+    const now = new Date();
+    const sevenDaysFromNow = new Date();
+    sevenDaysFromNow.setDate(now.getDate() + 7);
+    
+    // Get pending invoices that are due soon or overdue
+    const pendingInvoices = await Transaction.find({
+      type: 'invoice',
+      status: 'pending',
+      $or: [
+        { dueDate: { $lte: sevenDaysFromNow } }, // Due within 7 days
+        { dueDate: { $lt: now } } // Overdue
+      ]
+    })
+    .populate('customerId', 'name phone')
+    .sort({ dueDate: 1 });
+    
+    const alerts = pendingInvoices.map(transaction => {
+      const dueDate = new Date(transaction.dueDate);
+      const daysUntilDue = Math.ceil((dueDate - now) / (1000 * 60 * 60 * 24));
+      const daysOverdue = Math.ceil((now - dueDate) / (1000 * 60 * 60 * 24));
+      
+      let alertType = 'due_soon';
+      let priority = 'low';
+      
+      if (daysUntilDue < 0) {
+        alertType = 'overdue';
+        if (daysOverdue >= 30) {
+          priority = 'urgent';
+        } else if (daysOverdue >= 14) {
+          priority = 'high';
+        } else if (daysOverdue >= 7) {
+          priority = 'medium';
+        }
+      } else if (daysUntilDue === 0) {
+        priority = 'high';
+      } else if (daysUntilDue <= 3) {
+        priority = 'medium';
+      }
+      
+      return {
+        id: transaction._id.toString(),
+        customerName: transaction.customerName || transaction.customerId?.name || 'Unknown Customer',
+        amount: transaction.amount,
+        dueDate: transaction.dueDate,
+        alertType,
+        daysUntilDue: daysUntilDue >= 0 ? daysUntilDue : undefined,
+        daysOverdue: daysUntilDue < 0 ? daysOverdue : undefined,
+        priority,
+        customer: transaction.customerId ? {
+          name: transaction.customerId.name,
+          phone: transaction.customerId.phone
+        } : undefined
+      };
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: alerts
+    });
+  } catch (err) {
+    next(err);
+  }
+};

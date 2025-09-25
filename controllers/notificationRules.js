@@ -55,71 +55,84 @@ exports.testNotificationRule = async (req, res) => {
  */
 exports.checkDueDateNotifications = async (req, res) => {
   try {
-    // Find all active notification rules for due date reminders or balance threshold
+    // Find all active notification rules for due date reminders
     const rules = await NotificationRule.find({
       triggerType: 'due_date_reminder',
       active: true
     });
-    
+
+    // If called without res (e.g., from cron), return payload instead of res.json
     if (rules.length === 0) {
-      return res.json({
+      const payload = {
         success: true,
         data: [],
         message: 'No active due date reminder rules found'
-      });
+      };
+      if (res) return res.json(payload);
+      return payload;
     }
-    
-    // Get all pending invoices
+
+    // Get all pending invoices with a valid due date
     const pendingInvoices = await Transaction.find({
       type: 'invoice',
       status: 'pending',
-      dueDate: { $exists: true }
+      dueDate: { $exists: true, $ne: null }
     }).populate('customerId', 'name phone email balance');
-    
+
     const notifications = [];
-    
+
     // Process each rule
     for (const rule of rules) {
-      const { conditions } = rule;
-      const daysBeforeDue = conditions.daysBeforeDue || 0;
-      const balanceThreshold = conditions.balanceThreshold || 0;
-      
+      const conditions = rule.conditions || {};
+      const daysBeforeDue = Number.isFinite(conditions.daysBeforeDue)
+        ? conditions.daysBeforeDue
+        : (conditions.daysBeforeDue || 0);
+      const balanceThreshold = Number.isFinite(conditions.balanceThreshold)
+        ? conditions.balanceThreshold
+        : (conditions.balanceThreshold || 0);
+
       // Calculate the target date (today + daysBeforeDue)
       const today = new Date();
       const targetDate = new Date();
       targetDate.setDate(today.getDate() + daysBeforeDue);
-      
-      // Format dates to compare only the date part (not time)
+
+      // Compare only the date part (YYYY-MM-DD)
       const targetDateStr = targetDate.toISOString().split('T')[0];
-      
-      // Find invoices with due dates matching our target and balance threshold
-      const matchingInvoices = pendingInvoices.filter(invoice => {
+
+      // Find invoices with due dates matching our target and meeting balance threshold
+      const matchingInvoices = pendingInvoices.filter((invoice) => {
+        if (!invoice.dueDate) return false;
         const dueDateStr = new Date(invoice.dueDate).toISOString().split('T')[0];
-        const customerBalance = invoice.customerId.balance || 0;
+        const customer = invoice.customerId || {};
+        const customerBalance = typeof customer.balance === 'number' ? customer.balance : 0;
         return dueDateStr === targetDateStr && customerBalance >= balanceThreshold;
       });
-      
+
       // Create notifications for matching invoices
       for (const invoice of matchingInvoices) {
+        const customer = invoice.customerId || {};
         notifications.push({
           rule: rule._id,
           invoice: invoice._id,
           customer: invoice.customerId,
           dueDate: invoice.dueDate,
-          message: `Invoice #${invoice._id} for ${invoice.customerId.name} is due in ${daysBeforeDue} days and balance is $${invoice.customerId.balance}`,
+          message: `Invoice #${invoice._id} for ${customer.name || invoice.customerName || 'Unknown Customer'} is due in ${daysBeforeDue} day${daysBeforeDue === 1 ? '' : 's'} and balance is $${typeof customer.balance === 'number' ? customer.balance : 0}`,
           created: new Date()
         });
       }
     }
-    
-    res.json({
+
+    const payload = {
       success: true,
       count: notifications.length,
       data: notifications
-    });
+    };
+    if (res) return res.json(payload);
+    return payload;
   } catch (err) {
     console.error(err.message);
-    res.status(500).json({ success: false, error: 'Server Error' });
+    if (res) return res.status(500).json({ success: false, error: 'Server Error' });
+    throw err;
   }
 };
 

@@ -4,6 +4,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 const helmet = require('helmet');
 const cron = require('node-cron');
+const path = require('path');
 const connectDB = require('./config/db');
 const { checkDueDateNotifications } = require('./controllers/notificationRules');
 
@@ -36,7 +37,7 @@ app.use(helmet());
 // Enable CORS
 app.use(cors());
 
-// Mount routers
+// Mount API routers
 app.use('/api/v1/customers', customers);
 app.use('/api/v1/transactions', transactions);
 app.use('/api/v1/notification-rules', notificationRules);
@@ -54,9 +55,19 @@ cron.schedule('0 0 * * *', async () => {
   }
 });
 
-// Basic route for testing
-app.get('/', (req, res) => {
-  res.json({ message: 'Welcome to Rasmsons Accounting API' });
+// Serve frontend build (dist) from sibling project
+const frontendDistPath = path.resolve(__dirname, '../ramsons-software/dist');
+app.use(express.static(frontendDistPath));
+
+// Health check for API
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK' });
+});
+
+// Fallback to index.html for non-API routes
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/')) return next();
+  res.sendFile(path.join(frontendDistPath, 'index.html'));
 });
 
 // Error handler middleware
