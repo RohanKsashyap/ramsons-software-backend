@@ -13,7 +13,6 @@ const {
 // Input validation middleware
 const validateCustomerInput = [
   check('name', 'Name is required').not().isEmpty(),
-  check('phone', 'Phone number is required').not().isEmpty(),
   (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

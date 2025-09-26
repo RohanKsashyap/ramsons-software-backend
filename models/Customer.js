@@ -9,7 +9,6 @@ const CustomerSchema = new mongoose.Schema({
   },
   phone: {
     type: String,
-    required: [true, 'Please add a phone number'],
     trim: true,
     maxlength: [20, 'Phone number cannot be more than 20 characters']
   },
