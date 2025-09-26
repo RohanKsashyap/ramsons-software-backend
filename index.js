@@ -20,6 +20,7 @@ const transactions = require('./routes/transactions');
 const notificationRules = require('./routes/notificationRules');
 const dashboard = require('./routes/dashboard');
 const reports = require('./routes/reports');
+const auth = require('./routes/auth');
 
 const app = express();
 
@@ -43,6 +44,7 @@ app.use('/api/v1/transactions', transactions);
 app.use('/api/v1/notification-rules', notificationRules);
 app.use('/api/v1/dashboard', dashboard);
 app.use('/api/v1/reports', reports);
+app.use('/api/v1/auth', auth);
 
 // Schedule due date notification check to run daily at midnight
 cron.schedule('0 0 * * *', async () => {
