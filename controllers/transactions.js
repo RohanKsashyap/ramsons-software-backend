@@ -358,7 +358,7 @@ exports.getDueDateAlerts = async (req, res, next) => {
         { dueDate: { $lt: now } } // Overdue
       ]
     })
-    .populate('customerId', 'name phone')
+    .populate('customerId', 'name phone balance totalCredit totalPaid')
     .sort({ dueDate: 1 });
     
     const alerts = pendingInvoices.map(transaction => {
@@ -384,10 +384,16 @@ exports.getDueDateAlerts = async (req, res, next) => {
         priority = 'medium';
       }
       
+      const customerBalance = typeof transaction.customerId?.balance === 'number'
+        ? Math.max(transaction.customerId.balance, 0)
+        : undefined;
+      const outstandingAmount = customerBalance !== undefined ? customerBalance : transaction.amount;
+      
       return {
         id: transaction._id.toString(),
         customerName: transaction.customerName || transaction.customerId?.name || 'Unknown Customer',
-        amount: transaction.amount,
+        amount: outstandingAmount,
+        originalAmount: transaction.amount,
         dueDate: transaction.dueDate,
         alertType,
         daysUntilDue: daysUntilDue >= 0 ? daysUntilDue : undefined,
@@ -395,7 +401,10 @@ exports.getDueDateAlerts = async (req, res, next) => {
         priority,
         customer: transaction.customerId ? {
           name: transaction.customerId.name,
-          phone: transaction.customerId.phone
+          phone: transaction.customerId.phone,
+          balance: transaction.customerId.balance,
+          totalCredit: transaction.customerId.totalCredit,
+          totalPaid: transaction.customerId.totalPaid
         } : undefined
       };
     });
