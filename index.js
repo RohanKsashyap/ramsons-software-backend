@@ -5,7 +5,7 @@ const morgan = require('morgan');
 const helmet = require('helmet');
 const cron = require('node-cron');
 const path = require('path');
-const connectDB = require('./config/db');
+const connectDB = require('./config/db.offline');
 const { checkDueDateNotifications } = require('./controllers/notificationRules');
 
 // Load env vars
