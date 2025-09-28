@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const MONGO_URI = 'mongodb://localhost:27017/rasmsons_accounting';
+const MONGO_URI = 'mongodb+srv://ottodev7806_db_user:13131313SABs@ramsons-software.xz7uwqz.mongodb.net/?retryWrites=true&w=majority&appName=ramsons-software';
 
 const connectDB = async () => {
   try {
