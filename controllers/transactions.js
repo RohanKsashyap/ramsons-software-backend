@@ -1,6 +1,25 @@
 const Transaction = require('../models/Transaction');
 const Customer = require('../models/Customer');
 
+// @desc    Get transactions by customer ID
+// @route   GET /api/v1/transactions/customer/:customerId
+// @access  Public
+exports.getCustomerTransactions = async (req, res, next) => {
+  try {
+    const transactions = await Transaction.find({ customerId: req.params.customerId })
+      .sort({ date: -1 })
+      .populate('customerId', 'name');
+    
+    res.status(200).json({
+      success: true,
+      count: transactions.length,
+      data: transactions
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // @desc    Get all transactions
 // @route   GET /api/v1/transactions
 // @access  Public
@@ -100,6 +119,10 @@ exports.createTransaction = async (req, res, next) => {
       });
     }
     
+    // Check if using advance payment
+    let useAdvancePayment = req.body.useAdvancePayment;
+    let advanceAmountUsed = 0;
+    
     // Create transaction
     const transaction = await Transaction.create({
       ...req.body,
@@ -112,14 +135,35 @@ exports.createTransaction = async (req, res, next) => {
       customer.balance -= req.body.amount;
       await customer.save();
     } else if (req.body.type === 'invoice') {
-      customer.totalCredit += req.body.amount;
-      customer.balance += req.body.amount;
+      // Check if we should use advance payment
+      if (useAdvancePayment && customer.advancePayment > 0) {
+        // Calculate how much advance payment can be used
+        advanceAmountUsed = Math.min(customer.advancePayment, req.body.amount);
+        
+        // Update customer advance payment
+        customer.advancePayment -= advanceAmountUsed;
+        
+        // Adjust the balance accordingly (only add the remaining amount to balance)
+        customer.totalCredit += req.body.amount;
+        customer.balance += (req.body.amount - advanceAmountUsed);
+        
+        // Add a note to the transaction
+        transaction.description = transaction.description ? 
+          `${transaction.description} (${advanceAmountUsed} paid from advance payment)` : 
+          `${advanceAmountUsed} paid from advance payment`;
+        await transaction.save();
+      } else {
+        // Regular invoice without advance payment
+        customer.totalCredit += req.body.amount;
+        customer.balance += req.body.amount;
+      }
       await customer.save();
     }
     
     res.status(201).json({
       success: true,
-      data: transaction
+      data: transaction,
+      advancePaymentUsed: advanceAmountUsed
     });
   } catch (err) {
     next(err);

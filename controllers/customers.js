@@ -132,3 +132,84 @@ exports.deleteMultipleCustomers = async (req, res, next) => {
     next(err);
   }
 };
+
+// @desc    Add advance payment to customer
+// @route   POST /api/v1/customers/:id/advance-payment
+// @access  Public
+exports.addAdvancePayment = async (req, res, next) => {
+  try {
+    const { amount } = req.body;
+    
+    if (!amount || isNaN(amount) || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide a valid amount'
+      });
+    }
+    
+    const customer = await Customer.findById(req.params.id);
+    
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        error: 'Customer not found'
+      });
+    }
+    
+    // Add to advance payment
+    customer.advancePayment = (customer.advancePayment || 0) + parseFloat(amount);
+    
+    await customer.save();
+    
+    res.status(200).json({
+      success: true,
+      data: customer
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @desc    Use advance payment for purchase
+// @route   POST /api/v1/customers/:id/use-advance
+// @access  Public
+exports.useAdvancePayment = async (req, res, next) => {
+  try {
+    const { amount } = req.body;
+    
+    if (!amount || isNaN(amount) || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide a valid amount'
+      });
+    }
+    
+    const customer = await Customer.findById(req.params.id);
+    
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        error: 'Customer not found'
+      });
+    }
+    
+    if (!customer.advancePayment || customer.advancePayment < amount) {
+      return res.status(400).json({
+        success: false,
+        error: 'Insufficient advance payment balance'
+      });
+    }
+    
+    // Deduct from advance payment
+    customer.advancePayment -= parseFloat(amount);
+    
+    await customer.save();
+    
+    res.status(200).json({
+      success: true,
+      data: customer
+    });
+  } catch (err) {
+    next(err);
+  }
+};

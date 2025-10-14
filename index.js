@@ -21,6 +21,7 @@ const notificationRules = require('./routes/notificationRules');
 const dashboard = require('./routes/dashboard');
 const reports = require('./routes/reports');
 const auth = require('./routes/auth');
+const products = require('./routes/products');
 
 const app = express();
 
@@ -35,8 +36,12 @@ if (process.env.NODE_ENV === 'development') {
 // Security headers
 app.use(helmet());
 
-// Enable CORS
-app.use(cors());
+// Enable CORS with specific configuration
+app.use(cors({
+  origin: ['http://localhost:5173', 'http://localhost:5174'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // Mount API routers
 app.use('/api/v1/customers', customers);
@@ -45,6 +50,7 @@ app.use('/api/v1/notification-rules', notificationRules);
 app.use('/api/v1/dashboard', dashboard);
 app.use('/api/v1/reports', reports);
 app.use('/api/v1/auth', auth);
+app.use('/api/v1/products', products);
 
 // Schedule due date notification check to run daily at midnight
 cron.schedule('0 0 * * *', async () => {

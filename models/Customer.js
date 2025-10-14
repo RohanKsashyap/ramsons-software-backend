@@ -35,6 +35,10 @@ const CustomerSchema = new mongoose.Schema({
   balance: {
     type: Number,
     default: 0
+  },
+  advancePayment: {
+    type: Number,
+    default: 0
   }
 }, {
   timestamps: true,

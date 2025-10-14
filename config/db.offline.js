@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
+require('dotenv').config();
 
-const MONGO_URI = 'mongodb+srv://ottodev7806_db_user:13131313SABs@ramsons-software.xz7uwqz.mongodb.net/?retryWrites=true&w=majority&appName=ramsons-software';
+const MONGO_URI = process.env.MONGO_URI||'mongodb+srv://ottodev7806_db_user:13131313SABs@ramsons-software.xz7uwqz.mongodb.net/?retryWrites=true&w=majority&appName=ramsons-software';
 
 const connectDB = async () => {
   try {
