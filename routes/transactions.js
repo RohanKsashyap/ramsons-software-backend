@@ -10,7 +10,8 @@ const {
   deleteMultipleTransactions,
   getTransactionStats,
   getDueDateAlerts,
-  getCustomerTransactions
+  getCustomerTransactions,
+  applyAdvanceDeduction
 } = require('../controllers/transactions');
 
 // Input validation middleware
@@ -32,6 +33,7 @@ const validateTransactionInput = [
 router.route('/stats').get(getTransactionStats);
 router.route('/due-date-alerts').get(getDueDateAlerts);
 router.route('/customer/:customerId').get(getCustomerTransactions);
+router.route('/advance-deduction').post(applyAdvanceDeduction);
 
 // Delete multiple transactions
 router.route('/bulk')

@@ -13,7 +13,7 @@ const TransactionSchema = new mongoose.Schema({
   type: {
     type: String,
     required: [true, 'Please add a transaction type'],
-    enum: ['payment', 'invoice', 'customer', 'credit', 'debit']
+    enum: ['payment', 'invoice', 'customer', 'credit', 'debit', 'advance']
   },
   amount: {
     type: Number,

@@ -1,6 +1,44 @@
 const Transaction = require('../models/Transaction');
 const Customer = require('../models/Customer');
 
+// Helper function to recalculate customer balance from all transactions
+async function recalculateCustomerBalance(customerId) {
+  const customer = await Customer.findById(customerId);
+  if (!customer) return;
+
+  // Get all completed transactions for this customer
+  const transactions = await Transaction.find({
+    customerId: customerId,
+    status: 'completed'
+  });
+
+  // Reset balances
+  let totalCredit = 0;
+  let totalPaid = 0;
+
+  // Calculate totals from transactions
+  for (const transaction of transactions) {
+    if (transaction.type === 'invoice') {
+      totalCredit += transaction.amount;
+    } else if (transaction.type === 'payment') {
+      totalPaid += transaction.amount;
+    }
+  }
+
+  // Update customer with recalculated values
+  customer.totalCredit = totalCredit;
+  customer.totalPaid = totalPaid;
+  customer.balance = totalCredit - totalPaid;
+
+  // Ensure balance doesn't go below 0 due to rounding errors
+  if (customer.balance < 0.01 && customer.balance > -0.01) {
+    customer.balance = 0;
+  }
+
+  await customer.save();
+  return customer;
+}
+
 // @desc    Get transactions by customer ID
 // @route   GET /api/v1/transactions/customer/:customerId
 // @access  Public
@@ -122,49 +160,87 @@ exports.createTransaction = async (req, res, next) => {
     // Check if using advance payment
     let useAdvancePayment = req.body.useAdvancePayment;
     let advanceAmountUsed = 0;
+    let advancePaymentTransaction = null;
     
-    // Create transaction
+    // Determine invoice status if using advance payment
+    let invoiceStatus = req.body.status || 'pending';
+    if (req.body.type === 'invoice' && useAdvancePayment && customer.advancePayment > 0) {
+      advanceAmountUsed = Math.min(customer.advancePayment, req.body.amount);
+      // If advance covers full amount, mark as completed from the start
+      if (advanceAmountUsed >= req.body.amount) {
+        invoiceStatus = 'completed';
+      }
+    }
+    
+    // Create main transaction (invoice or payment)
     const transaction = await Transaction.create({
       ...req.body,
-      customerName: customer.name
+      customerName: customer.name,
+      status: invoiceStatus
     });
     
     // Update customer balance based on transaction type
     if (req.body.type === 'payment' && req.body.status === 'completed') {
-      customer.totalPaid += req.body.amount;
-      customer.balance -= req.body.amount;
-      await customer.save();
+      // Regular payment transaction - recalculate from scratch
+      await recalculateCustomerBalance(customer._id);
+      
+      // Get updated customer
+      const updatedCustomer = await Customer.findById(customer._id);
+      
+      res.status(201).json({
+        success: true,
+        data: transaction,
+        customerBalance: updatedCustomer.balance,
+        customerAdvanceBalance: updatedCustomer.advancePayment
+      });
     } else if (req.body.type === 'invoice') {
       // Check if we should use advance payment
       if (useAdvancePayment && customer.advancePayment > 0) {
-        // Calculate how much advance payment can be used
-        advanceAmountUsed = Math.min(customer.advancePayment, req.body.amount);
-        
-        // Update customer advance payment
+        // Deduct from customer advance payment
         customer.advancePayment -= advanceAmountUsed;
+        await customer.save();
         
-        // Adjust the balance accordingly (only add the remaining amount to balance)
-        customer.totalCredit += req.body.amount;
-        customer.balance += (req.body.amount - advanceAmountUsed);
+        // Create a payment transaction for the advance amount used
+        advancePaymentTransaction = await Transaction.create({
+          customerId: customer._id,
+          customerName: customer.name,
+          type: 'payment',
+          amount: advanceAmountUsed,
+          status: 'completed',
+          description: `Advance payment applied to invoice ${transaction.reference || transaction._id}`,
+          reference: `ADV-${transaction.reference || transaction._id}`,
+          date: transaction.date,
+          paymentMethod: 'advance' // Mark this as an advance payment transaction
+        });
         
-        // Add a note to the transaction
+        // Update invoice description and mark that advance was used
         transaction.description = transaction.description ? 
-          `${transaction.description} (${advanceAmountUsed} paid from advance payment)` : 
-          `${advanceAmountUsed} paid from advance payment`;
+          `${transaction.description} (₹${advanceAmountUsed} paid from advance)` : 
+          `₹${advanceAmountUsed} paid from advance payment`;
+        transaction.paymentMethod = 'advance'; // Mark invoice as paid by advance
         await transaction.save();
-      } else {
-        // Regular invoice without advance payment
-        customer.totalCredit += req.body.amount;
-        customer.balance += req.body.amount;
       }
-      await customer.save();
+      
+      // Recalculate customer balance from all transactions
+      await recalculateCustomerBalance(customer._id);
+      
+      // Get updated customer with fresh data
+      const updatedCustomer = await Customer.findById(customer._id);
+      
+      res.status(201).json({
+        success: true,
+        data: transaction,
+        advancePaymentUsed: advanceAmountUsed,
+        advancePaymentTransaction: advancePaymentTransaction,
+        customerBalance: updatedCustomer.balance,
+        customerAdvanceBalance: updatedCustomer.advancePayment
+      });
+    } else {
+      res.status(201).json({
+        success: true,
+        data: transaction
+      });
     }
-    
-    res.status(201).json({
-      success: true,
-      data: transaction,
-      advancePaymentUsed: advanceAmountUsed
-    });
   } catch (err) {
     next(err);
   }
@@ -243,24 +319,13 @@ exports.deleteTransaction = async (req, res, next) => {
       });
     }
     
-    // Update customer balance if transaction was completed
-    if (transaction.status === 'completed') {
-      const customer = await Customer.findById(transaction.customerId);
-      
-      if (customer) {
-        if (transaction.type === 'payment') {
-          customer.totalPaid -= transaction.amount;
-          customer.balance += transaction.amount;
-        } else if (transaction.type === 'invoice') {
-          customer.totalCredit -= transaction.amount;
-          customer.balance -= transaction.amount;
-        }
-        
-        await customer.save();
-      }
-    }
+    const customerId = transaction.customerId;
     
+    // Delete the transaction
     await transaction.deleteOne();
+    
+    // Recalculate customer balance from scratch based on remaining transactions
+    await recalculateCustomerBalance(customerId);
     
     res.status(200).json({
       success: true,
@@ -350,34 +415,131 @@ exports.deleteMultipleTransactions = async (req, res, next) => {
       });
     }
 
-    // Get transactions to update customer balances
+    // Get transactions to identify affected customers
     const transactions = await Transaction.find({ _id: { $in: ids } });
     
-    // Update customer balances for completed transactions
-    for (const transaction of transactions) {
-      if (transaction.status === 'completed') {
-        const customer = await Customer.findById(transaction.customerId);
-        
-        if (customer) {
-          if (transaction.type === 'payment') {
-            customer.totalPaid -= transaction.amount;
-            customer.balance += transaction.amount;
-          } else if (transaction.type === 'invoice') {
-            customer.totalCredit -= transaction.amount;
-            customer.balance -= transaction.amount;
-          }
-          
-          await customer.save();
-        }
-      }
-    }
+    // Get unique customer IDs
+    const customerIds = [...new Set(transactions.map(t => t.customerId.toString()))];
 
+    // Delete transactions
     const result = await Transaction.deleteMany({ _id: { $in: ids } });
+    
+    // Recalculate balance for each affected customer
+    for (const customerId of customerIds) {
+      await recalculateCustomerBalance(customerId);
+    }
     
     res.status(200).json({
       success: true,
       deletedCount: result.deletedCount,
       message: `Successfully deleted ${result.deletedCount} transaction(s)`
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @desc    Apply advance payment deduction to invoice
+// @route   POST /api/v1/transactions/advance-deduction
+// @access  Public
+exports.applyAdvanceDeduction = async (req, res, next) => {
+  try {
+    const { transactionId, amount } = req.body;
+    
+    // Validate input
+    if (!transactionId || !amount) {
+      return res.status(400).json({
+        success: false,
+        error: 'Transaction ID and amount are required'
+      });
+    }
+    
+    if (amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Amount must be greater than zero'
+      });
+    }
+    
+    // Find the invoice transaction
+    const invoice = await Transaction.findById(transactionId);
+    
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        error: 'Transaction not found'
+      });
+    }
+    
+    if (invoice.type !== 'invoice') {
+      return res.status(400).json({
+        success: false,
+        error: 'Advance payment can only be applied to invoice transactions'
+      });
+    }
+    
+    // Get customer
+    const customer = await Customer.findById(invoice.customerId);
+    
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        error: 'Customer not found'
+      });
+    }
+    
+    // Check if customer has enough advance payment
+    if (customer.advancePayment <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Customer has no advance payment available'
+      });
+    }
+    
+    // Calculate the deduction amount (cannot exceed advance payment or requested amount)
+    const deductionAmount = Math.min(customer.advancePayment, amount);
+    
+    // Deduct from advance payment
+    customer.advancePayment -= deductionAmount;
+    
+    // Reduce customer balance (dues)
+    customer.balance -= deductionAmount;
+    
+    // If balance becomes negative, set to 0
+    if (customer.balance < 0) {
+      customer.balance = 0;
+    }
+    
+    // Check if the invoice should be marked as completed
+    // If the deduction amount covers the remaining balance for this invoice
+    if (invoice.status === 'pending' && customer.balance === 0) {
+      invoice.status = 'completed';
+      await invoice.save();
+    }
+    
+    await customer.save();
+    
+    // Create a transaction record for the advance deduction
+    const advanceTransaction = await Transaction.create({
+      customerId: customer._id,
+      customerName: customer.name,
+      type: 'advance',
+      amount: deductionAmount,
+      status: 'completed',
+      description: `Advance payment deduction applied to invoice ${invoice._id}`,
+      reference: `ADV-${invoice.reference || invoice._id}`
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        deductionAmount,
+        remainingAdvancePayment: customer.advancePayment,
+        remainingBalance: customer.balance,
+        invoiceStatus: invoice.status,
+        transaction: advanceTransaction
+      },
+      message: `Successfully deducted ${deductionAmount} from advance payment`
     });
   } catch (err) {
     next(err);
@@ -405,53 +567,59 @@ exports.getDueDateAlerts = async (req, res, next) => {
     .populate('customerId', 'name phone balance totalCredit totalPaid')
     .sort({ dueDate: 1 });
     
-    const alerts = pendingInvoices.map(transaction => {
-      const dueDate = new Date(transaction.dueDate);
-      const daysUntilDue = Math.ceil((dueDate - now) / (1000 * 60 * 60 * 24));
-      const daysOverdue = Math.ceil((now - dueDate) / (1000 * 60 * 60 * 24));
-      
-      let alertType = 'due_soon';
-      let priority = 'low';
-      
-      if (daysUntilDue < 0) {
-        alertType = 'overdue';
-        if (daysOverdue >= 30) {
-          priority = 'urgent';
-        } else if (daysOverdue >= 14) {
+    const alerts = pendingInvoices
+      .filter(transaction => {
+        // Filter out invoices where customer balance is 0 or less
+        const customerBalance = transaction.customerId?.balance || 0;
+        return customerBalance > 0.01; // Use 0.01 to account for rounding errors
+      })
+      .map(transaction => {
+        const dueDate = new Date(transaction.dueDate);
+        const daysUntilDue = Math.ceil((dueDate - now) / (1000 * 60 * 60 * 24));
+        const daysOverdue = Math.ceil((now - dueDate) / (1000 * 60 * 60 * 24));
+        
+        let alertType = 'due_soon';
+        let priority = 'low';
+        
+        if (daysUntilDue < 0) {
+          alertType = 'overdue';
+          if (daysOverdue >= 30) {
+            priority = 'urgent';
+          } else if (daysOverdue >= 14) {
+            priority = 'high';
+          } else if (daysOverdue >= 7) {
+            priority = 'medium';
+          }
+        } else if (daysUntilDue === 0) {
           priority = 'high';
-        } else if (daysOverdue >= 7) {
+        } else if (daysUntilDue <= 3) {
           priority = 'medium';
         }
-      } else if (daysUntilDue === 0) {
-        priority = 'high';
-      } else if (daysUntilDue <= 3) {
-        priority = 'medium';
-      }
-      
-      const customerBalance = typeof transaction.customerId?.balance === 'number'
-        ? Math.max(transaction.customerId.balance, 0)
-        : undefined;
-      const outstandingAmount = customerBalance !== undefined ? customerBalance : transaction.amount;
-      
-      return {
-        id: transaction._id.toString(),
-        customerName: transaction.customerName || transaction.customerId?.name || 'Unknown Customer',
-        amount: outstandingAmount,
-        originalAmount: transaction.amount,
-        dueDate: transaction.dueDate,
-        alertType,
-        daysUntilDue: daysUntilDue >= 0 ? daysUntilDue : undefined,
-        daysOverdue: daysUntilDue < 0 ? daysOverdue : undefined,
-        priority,
-        customer: transaction.customerId ? {
-          name: transaction.customerId.name,
-          phone: transaction.customerId.phone,
-          balance: transaction.customerId.balance,
-          totalCredit: transaction.customerId.totalCredit,
-          totalPaid: transaction.customerId.totalPaid
-        } : undefined
-      };
-    });
+        
+        const customerBalance = typeof transaction.customerId?.balance === 'number'
+          ? Math.max(transaction.customerId.balance, 0)
+          : undefined;
+        const outstandingAmount = customerBalance !== undefined ? customerBalance : transaction.amount;
+        
+        return {
+          id: transaction._id.toString(),
+          customerName: transaction.customerName || transaction.customerId?.name || 'Unknown Customer',
+          amount: outstandingAmount,
+          originalAmount: transaction.amount,
+          dueDate: transaction.dueDate,
+          alertType,
+          daysUntilDue: daysUntilDue >= 0 ? daysUntilDue : undefined,
+          daysOverdue: daysUntilDue < 0 ? daysOverdue : undefined,
+          priority,
+          customer: transaction.customerId ? {
+            name: transaction.customerId.name,
+            phone: transaction.customerId.phone,
+            balance: transaction.customerId.balance,
+            totalCredit: transaction.customerId.totalCredit,
+            totalPaid: transaction.customerId.totalPaid
+          } : undefined
+        };
+      });
     
     res.status(200).json({
       success: true,

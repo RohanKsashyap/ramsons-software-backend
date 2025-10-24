@@ -42,7 +42,7 @@ router.route('/:id')
 router.route('/:id/advance-payment')
   .post(addAdvancePayment);
 
-router.route('/:id/use-advance')
+router.route('/:id/use-advance-payment')
   .post(useAdvancePayment);
 
 module.exports = router;
