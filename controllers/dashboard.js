@@ -15,9 +15,9 @@ exports.getDashboardStats = async (req, res) => {
     // Get total transactions count
     const totalTransactions = await Transaction.countDocuments();
     
-    // Get total revenue (sum of completed payment transactions)
+    // Get total revenue (sum of completed invoices - actual sales made)
     const revenueResult = await Transaction.aggregate([
-      { $match: { type: 'payment', status: 'completed' } },
+      { $match: { type: 'invoice', status: 'completed' } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
@@ -32,7 +32,12 @@ exports.getDashboardStats = async (req, res) => {
     const recentTransactions = await Transaction.find()
       .sort({ date: -1 })
       .limit(5)
-      .populate('customerId', 'name');
+      .populate('customerId', 'name')
+      .populate({
+        path: 'items.productId',
+        model: 'Product',
+        select: 'name description sku category price'
+      });
     
     // Get overdue count (invoices that are past due date and still pending)
     const now = new Date();
@@ -96,11 +101,11 @@ exports.getMonthlyRevenue = async (req, res) => {
     // Get current year
     const currentYear = new Date().getFullYear();
     
-    // Get monthly revenue for current year
+    // Get monthly revenue for current year (completed invoices)
     const monthlyRevenue = await Transaction.aggregate([
       {
         $match: {
-          type: 'payment',
+          type: 'invoice',
           status: 'completed',
           date: {
             $gte: new Date(`${currentYear}-01-01`),

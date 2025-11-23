@@ -1,15 +1,56 @@
 const Transaction = require('../models/Transaction');
 const Customer = require('../models/Customer');
 
+// Helper function to mark invoices as completed when fully paid
+async function updateInvoiceStatusIfPaid(customerId) {
+  const customer = await Customer.findById(customerId);
+  if (!customer) return;
+
+  // Get all pending invoices for this customer
+  const pendingInvoices = await Transaction.find({
+    customerId: customerId,
+    type: 'invoice',
+    status: 'pending'
+  });
+
+  // Get all completed payments for this customer
+  const totalPayments = await Transaction.aggregate([
+    {
+      $match: {
+        customerId: customerId,
+        type: 'payment',
+        status: 'completed'
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: '$amount' }
+      }
+    }
+  ]);
+
+  const totalPaid = totalPayments.length > 0 ? totalPayments[0].total : 0;
+  let cumulativePaid = 0;
+
+  // Mark invoices as completed in order (FIFO)
+  for (const invoice of pendingInvoices.sort((a, b) => a.date - b.date)) {
+    if (cumulativePaid + invoice.amount <= totalPaid) {
+      invoice.status = 'completed';
+      await invoice.save();
+      cumulativePaid += invoice.amount;
+    }
+  }
+}
+
 // Helper function to recalculate customer balance from all transactions
 async function recalculateCustomerBalance(customerId) {
   const customer = await Customer.findById(customerId);
   if (!customer) return;
 
-  // Get all completed transactions for this customer
+  // Get all transactions for this customer
   const transactions = await Transaction.find({
-    customerId: customerId,
-    status: 'completed'
+    customerId: customerId
   });
 
   // Reset balances
@@ -18,10 +59,17 @@ async function recalculateCustomerBalance(customerId) {
 
   // Calculate totals from transactions
   for (const transaction of transactions) {
+    const normalizedStatus = (transaction.status || '').toLowerCase();
+
     if (transaction.type === 'invoice') {
-      totalCredit += transaction.amount;
+      // Only count invoices that are pending/unpaid, not completed or paid ones
+      if (['pending', 'unpaid', 'partial'].includes(normalizedStatus)) {
+        totalCredit += transaction.amount;
+      }
     } else if (transaction.type === 'payment') {
-      totalPaid += transaction.amount;
+      if (['completed', 'paid'].includes(normalizedStatus) && transaction.paymentMethod !== 'advance') {
+        totalPaid += transaction.amount;
+      }
     }
   }
 
@@ -46,8 +94,13 @@ exports.getCustomerTransactions = async (req, res, next) => {
   try {
     const transactions = await Transaction.find({ customerId: req.params.customerId })
       .sort({ date: -1 })
-      .populate('customerId', 'name');
-    
+      .populate('customerId', 'name')
+      .populate({
+        path: 'items.productId',
+        model: 'Product',
+        select: 'name description sku category price'
+      });
+
     res.status(200).json({
       success: true,
       count: transactions.length,
@@ -98,7 +151,12 @@ exports.getTransactions = async (req, res, next) => {
       .sort({ date: -1 })
       .skip(startIndex)
       .limit(limit)
-      .populate('customerId', 'name');
+      .populate('customerId', 'name')
+      .populate({
+        path: 'items.productId',
+        model: 'Product',
+        select: 'name description sku category price'
+      });
     
     // Get total count for pagination
     const total = await Transaction.countDocuments(query);
@@ -125,7 +183,12 @@ exports.getTransactions = async (req, res, next) => {
 exports.getTransaction = async (req, res, next) => {
   try {
     const transaction = await Transaction.findById(req.params.id)
-      .populate('customerId', 'name');
+      .populate('customerId', 'name')
+      .populate({
+        path: 'items.productId',
+        model: 'Product',
+        select: 'name description sku category price'
+      });
     
     if (!transaction) {
       return res.status(404).json({
@@ -158,13 +221,13 @@ exports.createTransaction = async (req, res, next) => {
     }
     
     // Check if using advance payment
-    let useAdvancePayment = req.body.useAdvancePayment;
+    let useAdvance = req.body.useAdvance || req.body.useAdvancePayment;
     let advanceAmountUsed = 0;
     let advancePaymentTransaction = null;
     
     // Determine invoice status if using advance payment
     let invoiceStatus = req.body.status || 'pending';
-    if (req.body.type === 'invoice' && useAdvancePayment && customer.advancePayment > 0) {
+    if (req.body.type === 'invoice' && useAdvance && customer.advancePayment > 0) {
       advanceAmountUsed = Math.min(customer.advancePayment, req.body.amount);
       // If advance covers full amount, mark as completed from the start
       if (advanceAmountUsed >= req.body.amount) {
@@ -173,14 +236,24 @@ exports.createTransaction = async (req, res, next) => {
     }
     
     // Create main transaction (invoice or payment)
-    const transaction = await Transaction.create({
+    let transaction = await Transaction.create({
       ...req.body,
       customerName: customer.name,
       status: invoiceStatus
     });
     
+    // Populate transaction items with product details
+    transaction = await Transaction.findById(transaction._id).populate({
+      path: 'items.productId',
+      model: 'Product',
+      select: 'name description sku category price'
+    });
+    
     // Update customer balance based on transaction type
     if (req.body.type === 'payment' && req.body.status === 'completed') {
+      // Mark invoices as completed if they're fully paid
+      await updateInvoiceStatusIfPaid(customer._id);
+      
       // Regular payment transaction - recalculate from scratch
       await recalculateCustomerBalance(customer._id);
       
@@ -195,7 +268,7 @@ exports.createTransaction = async (req, res, next) => {
       });
     } else if (req.body.type === 'invoice') {
       // Check if we should use advance payment
-      if (useAdvancePayment && customer.advancePayment > 0) {
+      if (useAdvance && customer.advancePayment > 0) {
         // Deduct from customer advance payment
         customer.advancePayment -= advanceAmountUsed;
         await customer.save();
@@ -260,41 +333,38 @@ exports.updateTransaction = async (req, res, next) => {
       });
     }
     
-    // If status is changing from/to completed, update customer balance
+    // If status is changing, update customer balance by recalculating from scratch
     if (req.body.status && req.body.status !== transaction.status) {
-      const customer = await Customer.findById(transaction.customerId);
+      // Update the transaction first
+      transaction = await Transaction.findByIdAndUpdate(
+        req.params.id,
+        req.body,
+        { new: true, runValidators: true }
+      ).populate({
+        path: 'items.productId',
+        model: 'Product',
+        select: 'name description sku category price'
+      });
       
-      if (customer) {
-        // If transaction was completed and now it's not
-        if (transaction.status === 'completed' && req.body.status !== 'completed') {
-          if (transaction.type === 'payment') {
-            customer.totalPaid -= transaction.amount;
-            customer.balance += transaction.amount;
-          } else if (transaction.type === 'invoice') {
-            customer.totalCredit -= transaction.amount;
-            customer.balance -= transaction.amount;
-          }
-        }
-        // If transaction was not completed and now it is
-        else if (transaction.status !== 'completed' && req.body.status === 'completed') {
-          if (transaction.type === 'payment') {
-            customer.totalPaid += transaction.amount;
-            customer.balance -= transaction.amount;
-          } else if (transaction.type === 'invoice') {
-            customer.totalCredit += transaction.amount;
-            customer.balance += transaction.amount;
-          }
-        }
-        
-        await customer.save();
+      // If this is a payment being marked as completed, mark related invoices as paid
+      if (transaction.type === 'payment' && transaction.status === 'completed') {
+        await updateInvoiceStatusIfPaid(transaction.customerId);
       }
+      
+      // Then recalculate customer balance from all transactions
+      await recalculateCustomerBalance(transaction.customerId);
+    } else {
+      // If status is not changing, just update normally
+      transaction = await Transaction.findByIdAndUpdate(
+        req.params.id,
+        req.body,
+        { new: true, runValidators: true }
+      ).populate({
+        path: 'items.productId',
+        model: 'Product',
+        select: 'name description sku category price'
+      });
     }
-    
-    transaction = await Transaction.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: true }
-    );
     
     res.status(200).json({
       success: true,

@@ -50,6 +50,31 @@ const TransactionSchema = new mongoose.Schema({
   paymentMethod: {
     type: String,
     trim: true
+  },
+  items: [{
+    productId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Product'
+    },
+    product: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Product'
+    },
+    quantity: {
+      type: Number,
+      required: true
+    },
+    pricePerUnit: {
+      type: Number,
+      required: true
+    },
+    total: {
+      type: Number,
+      required: true
+    }
+  }],
+  originalAmount: {
+    type: Number
   }
 }, {
   timestamps: true
