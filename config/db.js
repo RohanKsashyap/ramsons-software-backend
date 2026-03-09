@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 require('dotenv').config();
 
 // MongoDB connection string - using local MongoDB or fallback to memory storage
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/rasmsons_accounting';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://ottodev7806_db_user:13131313SABs@ramsons-software.xz7uwqz.mongodb.net/?appName=ramsons-software';
 
 // Connect to MongoDB with fallback to in-memory MongoDB for local testing
 const connectDB = async () => {
