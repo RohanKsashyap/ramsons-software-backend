@@ -16,6 +16,11 @@ const ProductSchema = new mongoose.Schema({
     required: [true, 'Please add a price'],
     min: [0, 'Price must be a positive number']
   },
+  unit: {
+    type: String,
+    default: 'pcs',
+    trim: true
+  },
   sku: {
     type: String,
     trim: true
