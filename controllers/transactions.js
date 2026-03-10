@@ -62,7 +62,10 @@ async function updateInvoiceStatusIfPaid(customerId) {
     {
       $match: {
         customerId: customerId,
-        type: 'payment',
+        $or: [
+          { type: 'payment' },
+          { type: 'advance', paymentMethod: 'advance' }
+        ],
         status: { $in: ['completed', 'paid'] }
       }
     },
@@ -725,6 +728,7 @@ exports.applyAdvanceDeduction = async (req, res, next) => {
     });
     
     // Recalculate customer balance from all transactions (this will also update invoice status if needed)
+    await updateInvoiceStatusIfPaid(customer._id);
     const updatedCustomer = await recalculateCustomerBalance(customer._id);
     
     // Refresh invoice to get updated status
