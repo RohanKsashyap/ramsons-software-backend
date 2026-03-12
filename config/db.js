@@ -1,13 +1,8 @@
 const mongoose = require('mongoose');
 require('dotenv').config();
 
-// MongoDB connection string - using local MongoDB or fallback to memory storage
-<<<<<<< HEAD
-const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://ottodev7806_db_user:13131313SABs@ramsons-software.xz7uwqz.mongodb.net/?appName=ramsons-software';
-=======
-const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://ottodev7806_db_user:13131313SABs@ramsons-software.xz7uwqz.mongodb.net/?retryWrites=true&w=majority&appName=ramsons-software';
->>>>>>> 870c433a75861feb0472029678e90834c06fefd3
-
+// MongoDB connection string - using local MongoDB or fallback to memory storage 
+const MONGO_URI = process.env.MONGO_URI 
 // Connect to MongoDB with fallback to in-memory MongoDB for local testing
 const connectDB = async () => {
   try {
