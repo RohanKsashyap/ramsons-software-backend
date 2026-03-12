@@ -118,8 +118,7 @@ async function seedNotifications() {
     console.log('Connecting to database...');
 
     // Connect to MongoDB
-    const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/ramsons-accounting';
-    await mongoose.connect(mongoURI);
+    const mongoURI = process.env.MONGO_URI 
 
     console.log('Seeding notification rules...');
 
