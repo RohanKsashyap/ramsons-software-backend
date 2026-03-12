@@ -116,22 +116,39 @@ const recalculateCustomerBalance = async (customerId) => {
 
   // Reset balances
   let totalCredit = 0;
-  let totalPaid = 0;
+  let totalPaid = 0; // Money applied to invoices (regular payments + advance usages)
+  let totalAdvanceReceipts = 0;
+  let totalAdvanceUsages = 0;
+  let totalRegularPayments = 0;
 
   // Calculate totals from transactions
   for (const transaction of transactions) {
     const normalizedStatus = (transaction.status || '').toLowerCase();
+    const isCompleted = ['completed', 'paid'].includes(normalizedStatus);
 
     if (transaction.type === 'invoice') {
       // All invoices count towards total credit (Sales)
       if (!['failed', 'cancelled'].includes(normalizedStatus)) {
         totalCredit += transaction.amount;
       }
-    } else if (transaction.type === 'payment' || (transaction.type === 'advance' && transaction.paymentMethod === 'advance')) {
-      // All completed payments including advance usage count towards total paid
-      // Advance receipts (type: 'advance' without advance paymentMethod) are excluded to show outstanding balance correctly
-      if (['completed', 'paid'].includes(normalizedStatus)) {
-        totalPaid += transaction.amount;
+    } else if (transaction.type === 'payment') {
+      if (isCompleted) {
+        if (transaction.paymentMethod === 'advance' || transaction.paymentMethod === 'FROM_ADVANCE') {
+          totalAdvanceUsages += transaction.amount;
+          totalPaid += transaction.amount;
+        } else {
+          totalRegularPayments += transaction.amount;
+          totalPaid += transaction.amount;
+        }
+      }
+    } else if (transaction.type === 'advance') {
+      if (isCompleted) {
+        if (transaction.paymentMethod === 'advance') {
+          totalAdvanceUsages += transaction.amount;
+          totalPaid += transaction.amount;
+        } else {
+          totalAdvanceReceipts += transaction.amount;
+        }
       }
     }
   }
@@ -141,9 +158,23 @@ const recalculateCustomerBalance = async (customerId) => {
   customer.totalPaid = totalPaid;
   customer.balance = Math.max(0, totalCredit - totalPaid);
 
+  // Calculate advance payment
+  // 1. Remaining from direct advance receipts (receipts - usages)
+  const remainingAdvanceFromReceipts = Math.max(0, totalAdvanceReceipts - totalAdvanceUsages);
+  
+  // 2. Overpayment from regular payments (extra amount after covering what advance usages didn't)
+  const neededFromRegularPayments = Math.max(0, totalCredit - totalAdvanceUsages);
+  const overpaymentFromPayments = Math.max(0, totalRegularPayments - neededFromRegularPayments);
+  
+  customer.advancePayment = remainingAdvanceFromReceipts + overpaymentFromPayments;
+
   // Ensure balance doesn't go below 0 due to rounding errors
   if (customer.balance < 0.01) {
     customer.balance = 0;
+  }
+  
+  if (customer.advancePayment < 0.01) {
+    customer.advancePayment = 0;
   }
 
   await customer.save();
@@ -462,8 +493,12 @@ exports.updateTransaction = async (req, res, next) => {
       });
     }
     
-    // If status is changing, update customer balance by recalculating from scratch
-    if (req.body.status && req.body.status !== transaction.status) {
+    // If status or amount or type is changing, update customer balance and invoice statuses
+    const isStatusChanging = req.body.status && req.body.status !== transaction.status;
+    const isAmountChanging = req.body.amount && req.body.amount !== transaction.amount;
+    const isTypeChanging = req.body.type && req.body.type !== transaction.type;
+
+    if (isStatusChanging || isAmountChanging || isTypeChanging) {
       // Update the transaction first
       transaction = await Transaction.findByIdAndUpdate(
         req.params.id,
@@ -475,10 +510,8 @@ exports.updateTransaction = async (req, res, next) => {
         select: 'name description sku category price'
       });
       
-      // If this is a payment being marked as completed, mark related invoices as paid
-      if (transaction.type === 'payment' && transaction.status === 'completed') {
-        await updateInvoiceStatusIfPaid(transaction.customerId);
-      }
+      // Mark invoices as completed/partial/pending based on remaining payments
+      await updateInvoiceStatusIfPaid(transaction.customerId);
       
       // Then recalculate customer balance from all transactions
       await recalculateCustomerBalance(transaction.customerId);
@@ -522,6 +555,9 @@ exports.deleteTransaction = async (req, res, next) => {
     
     // Delete the transaction
     await transaction.deleteOne();
+    
+    // Mark invoices as completed/partial/pending based on remaining payments
+    await updateInvoiceStatusIfPaid(customerId);
     
     // Recalculate customer balance from scratch based on remaining transactions
     await recalculateCustomerBalance(customerId);
@@ -625,6 +661,7 @@ exports.deleteMultipleTransactions = async (req, res, next) => {
     
     // Recalculate balance for each affected customer
     for (const customerId of customerIds) {
+      await updateInvoiceStatusIfPaid(customerId);
       await recalculateCustomerBalance(customerId);
     }
     
