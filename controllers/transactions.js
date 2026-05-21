@@ -46,6 +46,45 @@ async function deductInventoryOnSale(items, transactionId) {
   }
 }
 
+// Helper function to restore inventory when an invoice is deleted
+async function restoreInventoryOnDeletion(items, transactionId) {
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    return;
+  }
+
+  for (const item of items) {
+    const productId = item.productId || item.product;
+    const quantity = item.quantity;
+    
+    if (!productId || !quantity) {
+      continue;
+    }
+    
+    const product = await Product.findById(productId);
+    
+    if (!product) {
+      continue;
+    }
+    
+    const previousQuantity = product.quantity;
+    product.quantity += quantity;
+    await product.save();
+    
+    await InventoryAudit.create({
+      productId,
+      productName: product.name,
+      type: 'restock',
+      quantityChange: quantity,
+      previousQuantity,
+      newQuantity: product.quantity,
+      reason: 'Transaction deletion rollback',
+      transactionId: transactionId || null,
+      performedBy: 'system',
+      notes: `Rollback - ${quantity} units restored due to transaction deletion`
+    });
+  }
+}
+
 // Helper function to mark invoices as completed when fully paid
 async function updateInvoiceStatusIfPaid(customerId) {
   const customer = await Customer.findById(customerId);
@@ -553,6 +592,11 @@ exports.deleteTransaction = async (req, res, next) => {
     
     const customerId = transaction.customerId;
     
+    // Restore inventory if this was an invoice with items
+    if (transaction.type === 'invoice' && transaction.items && transaction.items.length > 0) {
+      await restoreInventoryOnDeletion(transaction.items, transaction._id);
+    }
+    
     // Delete the transaction
     await transaction.deleteOne();
     
@@ -655,6 +699,13 @@ exports.deleteMultipleTransactions = async (req, res, next) => {
     
     // Get unique customer IDs
     const customerIds = [...new Set(transactions.map(t => t.customerId.toString()))];
+
+    // Restore inventory for each invoice being deleted
+    for (const transaction of transactions) {
+      if (transaction.type === 'invoice' && transaction.items && transaction.items.length > 0) {
+        await restoreInventoryOnDeletion(transaction.items, transaction._id);
+      }
+    }
 
     // Delete transactions
     const result = await Transaction.deleteMany({ _id: { $in: ids } });
