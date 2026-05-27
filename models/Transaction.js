@@ -80,6 +80,12 @@ const TransactionSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  pendingAmount: {
+    type: Number,
+    default: function() {
+      return this.amount || 0;
+    }
+  },
   cgst: {
     type: Number,
     default: 0

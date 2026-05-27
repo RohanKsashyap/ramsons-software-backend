@@ -40,10 +40,16 @@ exports.getDashboardStats = async (req, res) => {
     ]);
     const totalSales = salesResult.length > 0 ? salesResult[0].total : 0;
     
-    // Get total outstanding (sum of invoice transactions minus completed payments, only positive balances)
-    const outstandingResult = await Customer.aggregate([
-      { $match: { balance: { $gt: 0 } } },
-      { $group: { _id: null, total: { $sum: '$balance' } } }
+    // Get total outstanding (sum of all pendingAmount from active invoices)
+    const outstandingResult = await Transaction.aggregate([
+      { 
+        $match: { 
+          type: 'invoice', 
+          status: { $nin: ['failed', 'cancelled'] },
+          pendingAmount: { $gt: 0 }
+        } 
+      },
+      { $group: { _id: null, total: { $sum: '$pendingAmount' } } }
     ]);
     const totalOutstanding = outstandingResult.length > 0 ? outstandingResult[0].total : 0;
 

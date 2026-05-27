@@ -2,6 +2,10 @@ const Transaction = require('../models/Transaction');
 const Customer = require('../models/Customer');
 const Product = require('../models/Product');
 const InventoryAudit = require('../models/InventoryAudit');
+const Invoice = require('../models/Invoice');
+const Payment = require('../models/Payment');
+const PaymentAllocation = require('../models/PaymentAllocation');
+const { allocatePayments, recalculateCustomerTotals, resetAndReallocate } = require('../services/ledgerService');
 
 // Helper function to deduct inventory on sales
 async function deductInventoryOnSale(items, transactionId) {
@@ -73,7 +77,7 @@ async function restoreInventoryOnDeletion(items, transactionId) {
     await InventoryAudit.create({
       productId,
       productName: product.name,
-      type: 'restock',
+      type: 'return',
       quantityChange: quantity,
       previousQuantity,
       newQuantity: product.quantity,
@@ -127,17 +131,23 @@ async function updateInvoiceStatusIfPaid(customerId) {
     if (remainingPayment >= invoice.amount) {
       invoice.status = 'completed';
       invoice.paidAmount = invoice.amount;
+      invoice.pendingAmount = 0;
       remainingPayment -= invoice.amount;
     } else if (remainingPayment > 0.01) { // Account for small rounding errors
       invoice.status = 'partial';
       invoice.paidAmount = remainingPayment;
+      invoice.pendingAmount = invoice.amount - remainingPayment;
       remainingPayment = 0;
     } else {
       invoice.status = 'pending';
       invoice.paidAmount = 0;
+      invoice.pendingAmount = invoice.amount;
     }
     
-    if (invoice.status !== previousStatus || invoice.paidAmount !== previousPaidAmount) {
+    // Check if any significant change happened (using a small epsilon for float comparison)
+    const hasPaidAmountChanged = Math.abs((invoice.paidAmount || 0) - (previousPaidAmount || 0)) > 0.01;
+    
+    if (invoice.status !== previousStatus || hasPaidAmountChanged || invoice.isModified('pendingAmount')) {
       await invoice.save();
     }
   }
@@ -219,6 +229,14 @@ const recalculateCustomerBalance = async (customerId) => {
   await customer.save();
   return customer;
 }
+
+// Helper to format reference/number (shorten if it looks like a MongoDB ID)
+const formatRef = (ref, prefix, fallbackId) => {
+  if (!ref || ref === '' || /^[0-9a-fA-F]{24}$/.test(ref)) {
+    return `${prefix}-${fallbackId.toString().slice(-6).toUpperCase()}`;
+  }
+  return ref;
+};
 
 exports.recalculateCustomerBalance = recalculateCustomerBalance;
 
@@ -378,13 +396,53 @@ exports.createTransaction = async (req, res, next) => {
       customerName: customer.name,
       status: invoiceStatus
     });
-    
+
     // Populate transaction items with product details
-    transaction = await Transaction.findById(transaction._id).populate({
-      path: 'items.productId',
-      model: 'Product',
-      select: 'name description sku category price'
-    });
+    transaction = await Transaction.findById(transaction._id)
+      .populate({
+        path: 'items.productId',
+        model: 'Product',
+        select: 'name description sku category price'
+      })
+      .populate({
+        path: 'items.product',
+        model: 'Product',
+        select: 'name description sku category price'
+      });
+
+    // Mirror to new Ledger models (After population to get product details)
+    if (req.body.type === 'invoice') {
+      await Invoice.create({
+        customerId: customer._id,
+        invoiceNumber: formatRef(req.body.invoiceNumber || req.body.reference, 'INV', transaction._id),
+        totalAmount: req.body.amount,
+        items: (transaction.items || []).map(item => {
+          const pName = item.productId?.name || item.product?.name || 'Product';
+          const pId = item.productId?._id || item.product?._id || item.productId || item.product;
+          
+          return {
+            productId: pId,
+            productName: pName,
+            quantity: item.quantity,
+            pricePerUnit: item.pricePerUnit,
+            total: item.total
+          };
+        }),
+        date: req.body.date || new Date()
+      });
+    } else if (req.body.type === 'payment') {
+      await Payment.create({
+        customerId: customer._id,
+        paymentNumber: formatRef(req.body.paymentNumber || req.body.reference, 'PAY', transaction._id),
+        amount: req.body.amount,
+        paymentMethod: req.body.paymentMethod || 'cash',
+        notes: req.body.description || req.body.notes,
+        date: req.body.date || new Date()
+      });
+    }
+
+    // Trigger allocation
+    await allocatePayments(customer._id);
     
     // Update customer balance based on transaction type
     if (req.body.type === 'payment' && req.body.status === 'completed') {
@@ -547,8 +605,52 @@ exports.updateTransaction = async (req, res, next) => {
         path: 'items.productId',
         model: 'Product',
         select: 'name description sku category price'
+      }).populate({
+        path: 'items.product',
+        model: 'Product',
+        select: 'name description sku category price'
       });
       
+      // Update mirrored ledger records
+      if (transaction.type === 'invoice') {
+        const invNumber = formatRef(transaction.invoiceNumber || transaction.reference, 'INV', transaction._id);
+        await Invoice.findOneAndUpdate(
+          { customerId: transaction.customerId, invoiceNumber: invNumber },
+          { 
+            totalAmount: transaction.amount,
+            items: (transaction.items || []).map(item => {
+              const pName = item.productId?.name || item.product?.name || 'Product';
+              const pId = item.productId?._id || item.product?._id || item.productId || item.product;
+              
+              return {
+                productId: pId,
+                productName: pName,
+                quantity: item.quantity,
+                pricePerUnit: item.pricePerUnit,
+                total: item.total
+              };
+            }),
+            date: transaction.date
+          },
+          { upsert: true }
+        );
+      } else if (transaction.type === 'payment') {
+        const payNumber = formatRef(transaction.paymentNumber || transaction.reference, 'PAY', transaction._id);
+        await Payment.findOneAndUpdate(
+          { customerId: transaction.customerId, paymentNumber: payNumber },
+          { 
+            amount: transaction.amount,
+            paymentMethod: transaction.paymentMethod || 'cash',
+            notes: transaction.description || transaction.notes,
+            date: transaction.date
+          },
+          { upsert: true }
+        );
+      }
+
+      // Reset and reallocate everything for this customer
+      await resetAndReallocate(transaction.customerId);
+
       // Mark invoices as completed/partial/pending based on remaining payments
       await updateInvoiceStatusIfPaid(transaction.customerId);
       
@@ -591,15 +693,30 @@ exports.deleteTransaction = async (req, res, next) => {
     }
     
     const customerId = transaction.customerId;
-    
+    const ref = formatRef(
+      transaction.type === 'invoice' ? (transaction.invoiceNumber || transaction.reference) : (transaction.paymentNumber || transaction.reference),
+      transaction.type === 'invoice' ? 'INV' : 'PAY',
+      transaction._id
+    );
+
     // Restore inventory if this was an invoice with items
     if (transaction.type === 'invoice' && transaction.items && transaction.items.length > 0) {
       await restoreInventoryOnDeletion(transaction.items, transaction._id);
     }
     
+    // Delete mirrored ledger records
+    if (transaction.type === 'invoice') {
+      await Invoice.deleteOne({ customerId, invoiceNumber: ref });
+    } else if (transaction.type === 'payment') {
+      await Payment.deleteOne({ customerId, paymentNumber: ref });
+    }
+
     // Delete the transaction
     await transaction.deleteOne();
     
+    // Reset and reallocate everything for this customer
+    await resetAndReallocate(customerId);
+
     // Mark invoices as completed/partial/pending based on remaining payments
     await updateInvoiceStatusIfPaid(customerId);
     
@@ -705,6 +822,19 @@ exports.deleteMultipleTransactions = async (req, res, next) => {
       if (transaction.type === 'invoice' && transaction.items && transaction.items.length > 0) {
         await restoreInventoryOnDeletion(transaction.items, transaction._id);
       }
+
+      // Delete mirrored ledger records
+      const ref = formatRef(
+        transaction.type === 'invoice' ? (transaction.invoiceNumber || transaction.reference) : (transaction.paymentNumber || transaction.reference),
+        transaction.type === 'invoice' ? 'INV' : 'PAY',
+        transaction._id
+      );
+      
+      if (transaction.type === 'invoice') {
+        await Invoice.deleteOne({ customerId: transaction.customerId, invoiceNumber: ref });
+      } else if (transaction.type === 'payment') {
+        await Payment.deleteOne({ customerId: transaction.customerId, paymentNumber: ref });
+      }
     }
 
     // Delete transactions
@@ -712,6 +842,7 @@ exports.deleteMultipleTransactions = async (req, res, next) => {
     
     // Recalculate balance for each affected customer
     for (const customerId of customerIds) {
+      await resetAndReallocate(customerId);
       await updateInvoiceStatusIfPaid(customerId);
       await recalculateCustomerBalance(customerId);
     }
@@ -851,6 +982,7 @@ exports.getDueDateAlerts = async (req, res, next) => {
     const pendingInvoices = await Transaction.find({
       type: 'invoice',
       status: { $in: ['pending', 'partial'] },
+      pendingAmount: { $gt: 0 },
       $or: [
         { dueDate: { $lte: sevenDaysFromNow } }, // Due within 7 days
         { dueDate: { $lt: now } } // Overdue
@@ -860,11 +992,6 @@ exports.getDueDateAlerts = async (req, res, next) => {
     .sort({ dueDate: 1 });
     
     const alerts = pendingInvoices
-      .filter(transaction => {
-        // Filter out invoices where customer balance is 0 or less
-        const customerBalance = transaction.customerId?.balance || 0;
-        return customerBalance > 0.01; // Use 0.01 to account for rounding errors
-      })
       .map(transaction => {
         const dueDate = new Date(transaction.dueDate);
         const daysUntilDue = Math.ceil((dueDate - now) / (1000 * 60 * 60 * 24));
@@ -888,10 +1015,7 @@ exports.getDueDateAlerts = async (req, res, next) => {
           priority = 'medium';
         }
         
-        const customerBalance = typeof transaction.customerId?.balance === 'number'
-          ? Math.max(transaction.customerId.balance, 0)
-          : undefined;
-        const outstandingAmount = customerBalance !== undefined ? customerBalance : transaction.amount;
+        const outstandingAmount = transaction.pendingAmount || (transaction.amount - (transaction.paidAmount || 0));
         
         return {
           id: transaction._id.toString(),

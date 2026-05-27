@@ -9,7 +9,8 @@ const {
   deleteCustomer,
   deleteMultipleCustomers,
   addAdvancePayment,
-  useAdvancePayment
+  useAdvancePayment,
+  getCustomerDetails
 } = require('../controllers/customers');
 
 // Input validation middleware
@@ -37,6 +38,9 @@ router.route('/:id')
   .get(getCustomer)
   .put(updateCustomer)
   .delete(deleteCustomer);
+
+router.route('/:id/details')
+  .get(getCustomerDetails);
 
 // Advance payment routes
 router.route('/:id/advance-payment')
