@@ -81,9 +81,9 @@ cron.schedule('0 0 * * *', async () => {
   }
 });
 
-// Serve frontend build (dist) from sibling project
-const frontendDistPath = path.resolve(__dirname, '../ramsons-software/dist');
-app.use(express.static(frontendDistPath));
+// // Serve frontend build (dist) from sibling project
+// const frontendDistPath = path.resolve(__dirname, '../ramsons-software/dist');
+// app.use(express.static(frontendDistPath));
 
 // Health check for API
 app.get('/api/v1/health', (req, res) => {
@@ -91,10 +91,10 @@ app.get('/api/v1/health', (req, res) => {
 });
 
 // Fallback to index.html for non-API routes
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api/')) return next();
-  res.sendFile(path.join(frontendDistPath, 'index.html'));
-});
+// app.get('*', (req, res, next) => {
+//   if (req.path.startsWith('/api/')) return next();
+//   res.sendFile(path.join(frontendDistPath, 'index.html'));
+// });
 
 // Error handler middleware
 app.use((err, req, res, next) => {
