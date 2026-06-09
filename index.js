@@ -86,7 +86,7 @@ const frontendDistPath = path.resolve(__dirname, '../ramsons-software/dist');
 app.use(express.static(frontendDistPath));
 
 // Health check for API
-app.get('/api/health', (req, res) => {
+app.get('/api/v1/health', (req, res) => {
   res.json({ status: 'OK' });
 });
 
